@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>EXPERT'S PLATFORM</title>
+    <!-- Chart.js for visualization -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .chart-container {
+            height: 400px;
+            margin: 20px 0;
+            cursor: grab;
+            position: relative;
+        }
+        .chart-container:active {
+            cursor: grabbing;
+        }
+        .chart-container::before {
+            content: "Use mouse wheel to zoom, drag to pan";
+            position: absolute;
+            bottom: -30px;
+            right: 10px;
+            background-color: rgba(255, 255, 255, 0.7);
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            color: #666;
+            z-index: 10;
+        }
+        .controls {
+            margin: 20px 0;
+            display: flex;
+            gap: 10px;
+        }
+        button {
+            padding: 8px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        .info-panel {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: #f9f9f9;
+            border-radius: 8px;
+        }
+        .info-box {
+            text-align: center;
+            padding: 10px;
+        }
+        .info-box h3 {
+            margin-top: 0;
+        }
+        .value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #2196F3;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>EXPERT'S PLATFORM</h1>
+        
+        <div class="info-panel">
+            <div class="info-box">
+                <h3>Heart Rate</h3>
+                <div class="value" id="heartRateValue">-- BPM</div>
+            </div>
+            <div class="info-box">
+                <h3>Recording Time</h3>
+                <div class="value" id="recordingTime">--:--</div>
+            </div>
+            <div class="info-box">
+                <h3>Signal Quality</h3>
+                <div class="value" id="signalQuality">--</div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button id="resetView">Reset View</button>
+        </div>
+
+        <div class="chart-container">
+            <canvas id="ppgChart"></canvas>
+        </div>
+    </div>
+
+    <script>
+        // Initialize Firebase
+        const firebaseConfig = {
+            apiKey: "AIzaSyAuT0yNMCbBFA_CTb3x0KP5hUclpZiJ4Y0",
+            authDomain: "health-monitor-93518.firebaseapp.com",
+            databaseURL: "https://health-monitor-93518-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "health-monitor-93518",
+            storageBucket: "health-monitor-93518.firebasestorage.app",
+            messagingSenderId: "712752694049",
+            appId: "1:712752694049:web:a72ef21170324c308f3460"
+        };
+        firebase.initializeApp(firebaseConfig);
+
+        // Reference to the database
+        const userId = "TObhhpC3JdSBFIkI6None92FN2Q2"; // Your user ID
+        const signalsRef = firebase.database().ref(`users/${userId}/ppg_signals`);
+
+        // Chart setup
+        const ctx = document.getElementById('ppgChart').getContext('2d');
+        let ppgChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                datasets: [{
+                    label: 'PPG Signal',
+                    data: [],
+                    borderColor: 'rgb(75, 192, 192)',
+                    tension: 0.1,
+                    borderWidth: 2
+                }, {
+                    label: 'Peaks',
+                    data: [],
+                    backgroundColor: 'rgb(255, 99, 132)',
+                    borderColor: 'rgb(255, 99, 132)',
+                    pointRadius: 5,
+                    pointHoverRadius: 7,
+                    showLine: false
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: {
+                    mode: 'index',
+                    intersect: false
+                },
+                scales: {
+                    x: {
+                        type: 'linear',  // Explicitly set the scale type
+                        min: 0,          // Initial min value
+                        max: 1000,       // Initial max value
+                        title: {
+                            display: true,
+                            text: 'Time (milliseconds)'
+                        }
+                    },
+                    y: {
+                        title: {
+                            display: true,
+                            text: 'Amplitude'
+                        }
+                    }
+                },
+                plugins: {
+                    tooltip: {
+                        callbacks: {
+                            title: function(tooltipItems) {
+                                return `Time: ${tooltipItems[0].parsed.x.toFixed(2)} milliseconds`;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        // View state
+        let viewState = {
+            zoomLevel: 1,
+            panOffset: 0
+        };
+
+        // Listen for new data
+        signalsRef.limitToLast(1).on('child_added', (snapshot) => {
+            const data = snapshot.val();
+            if (!data.signalData || !data.timeData) return;
+            
+        // Create properly typed data points
+        const signalData = [];
+        let peaksData = [];
+        const timeScaleFactor = 1000; // Convert to milliseconds for better visualization
+        
+        const baseTime = parseFloat(data.timeData[0]) * timeScaleFactor;
+        for (let i = 0; i < data.signalData.length; i++) {
+            signalData.push({
+                x: parseFloat(data.timeData[i]) * timeScaleFactor - baseTime,
+                y: parseFloat(data.signalData[i])
+            });
+
+        }
+        
+        // Debug logs AFTER signalData is populated
+        console.log("Start time:", signalData[0].x);
+        console.log("End time:", signalData[signalData.length-1].x);
+        console.log("Time range:", signalData[signalData.length-1].x - signalData[0].x);
+        
+        // Process peaks if available
+        if (data.peaks && data.peaks.length > 0) {
+            for (let i = 0; i < data.peaks.length; i++) {
+                const idx = parseInt(data.peaks[i]);
+                peaksData.push({
+                    x: parseFloat(data.timeData[idx]) * timeScaleFactor - baseTime,
+                    y: parseFloat(data.signalData[idx])
+                });
+            }
+        }
+    
+        // Update chart
+        ppgChart.data.datasets[0].data = signalData;
+        ppgChart.data.datasets[1].data = peaksData;
+        ppgChart.update();
+    
+        // Apply view settings after data update
+        updateChartView();
+
+        // Update info panels
+        if (data.heartRate) {
+            document.getElementById('heartRateValue').textContent = `${data.heartRate.toFixed(1)} BPM`;
+        }
+            
+        const recordTime = new Date(data.timestamp);
+        document.getElementById('recordingTime').textContent = 
+            `${recordTime.getHours()}:${String(recordTime.getMinutes()).padStart(2, '0')}`;
+
+        // Calculate signal quality (simple algorithm based on peak consistency)
+        if (data.peaks && data.peaks.length > 1) {
+            const peakTimes = data.peaks.map(idx => data.timeData[idx]);
+            const intervals = [];
+            for (let i = 1; i < peakTimes.length; i++) {
+                intervals.push(peakTimes[i] - peakTimes[i-1]);
+            }
+            const meanInterval = intervals.reduce((sum, val) => sum + val, 0) / intervals.length;
+            const deviation = Math.sqrt(intervals.reduce((sum, val) => sum + Math.pow(val - meanInterval, 2), 0) / intervals.length);
+            const cv = (deviation / meanInterval) * 100;
+                
+            let quality = "Good";
+            if (cv > 15) quality = "Ok";
+            else if (cv > 10) quality = "Fair";
+            document.getElementById('signalQuality').textContent = quality;
+        }
+    });
+
+        // Control buttons
+        document.getElementById('resetView').addEventListener('click', () => {
+            viewState = { zoomLevel: 1, panOffset: 0 };
+            // Force the chart to auto-scale once
+            ppgChart.options.scales.x.min = 0;
+            ppgChart.options.scales.x.max = undefined;
+            ppgChart.update();
+            // Then apply our custom view
+            updateChartView(true);
+        });
+        
+        // Mouse wheel zoom functionality
+        const chartContainer = document.querySelector('.chart-container');
+        
+        // Track mouse position for centered zooming
+        let mouseX = 0;
+        let chartRect = null;
+        
+        chartContainer.addEventListener('mousemove', (e) => {
+            chartRect = chartContainer.getBoundingClientRect();
+            mouseX = (e.clientX - chartRect.left) / chartRect.width;
+        });
+        
+        // Mouse wheel zoom
+        chartContainer.addEventListener('wheel', (e) => {
+            e.preventDefault(); // Prevent page scrolling
+            
+            const data = ppgChart.data.datasets[0].data;
+            if (!data || data.length === 0) return;
+            
+            const timeRange = data[data.length-1].x - data[0].x;
+            const visibleRange = timeRange / viewState.zoomLevel;
+            const currentMin = ppgChart.options.scales.x.min;
+            const currentMax = ppgChart.options.scales.x.max;
+            
+            // Calculate zoom center based on mouse position
+            const zoomCenter = currentMin + mouseX * (currentMax - currentMin);
+            
+            // Adjust zoom level based on wheel direction
+            if (e.deltaY < 0) {
+                // Zoom in
+                viewState.zoomLevel *= 1.2;
+            } else {
+                // Zoom out
+                viewState.zoomLevel /= 1.2;
+            }
+            
+            // Limit zoom level to reasonable values
+            viewState.zoomLevel = Math.min(Math.max(viewState.zoomLevel, 1), timeRange / 100);
+            
+            // Adjust pan to keep mouse position at the same relative position after zoom
+            const newVisibleRange = timeRange / viewState.zoomLevel;
+            const targetMin = zoomCenter - (mouseX * newVisibleRange);
+            const panAdjustment = (targetMin - data[0].x) * 100 / newVisibleRange;
+            viewState.panOffset = -panAdjustment;
+            
+            updateChartView();
+        });
+        
+        // Mouse drag pan functionality
+        let isDragging = false;
+        let dragStartX = 0;
+        let startPanOffset = 0;
+        
+        chartContainer.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            dragStartX = e.clientX;
+            startPanOffset = viewState.panOffset;
+            chartContainer.style.cursor = 'grabbing';
+        });
+        
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            
+            const data = ppgChart.data.datasets[0].data;
+            if (!data || data.length === 0) return;
+            
+            const timeRange = data[data.length-1].x - data[0].x;
+            const visibleRange = timeRange / viewState.zoomLevel;
+            
+            const chartRect = chartContainer.getBoundingClientRect();
+            const dragDistance = e.clientX - dragStartX;
+            const dragPercent = (dragDistance / chartRect.width) * 100;
+            
+            // Move in the opposite direction of the drag
+            viewState.panOffset = startPanOffset - dragPercent;
+            
+            updateChartView();
+        });
+        
+        document.addEventListener('mouseup', () => {
+            if (isDragging) {
+                isDragging = false;
+                chartContainer.style.cursor = 'grab';
+            }
+        });
+        
+        // Prevent context menu when right-clicking on chart
+        chartContainer.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+        });
+        
+        function updateChartView(isReset = false) {
+            const data = ppgChart.data.datasets[0].data;
+            if (!data || data.length === 0) {
+                console.log("No data to display");
+                return;
+            }
+
+            // Debug values
+            console.log("First x:", data[0].x, "Last x:", data[data.length-1].x);
+    
+            // Get the full time range of your data
+            const timeRange = Math.max(data[data.length-1].x - data[0].x, 1);
+            console.log("Time range:", timeRange);
+    
+            // For initial view, show approximately 1/3 of the data
+            const desiredInitialVisibleRange = timeRange / 3;
+    
+            // Calculate zoom level based on desired range
+            if (viewState.zoomLevel === 1) {
+                viewState.zoomLevel = timeRange / desiredInitialVisibleRange;
+                console.log("Initial zoom level set to:", viewState.zoomLevel);
+            }
+    
+            // Calculate visible window parameters
+            const visibleRange = timeRange / viewState.zoomLevel;
+            console.log("Visible range:", visibleRange);
+    
+            // If this is a reset, force the min to 0
+            let min, max;
+    
+            if (isReset) {
+                min = 0;
+                max = visibleRange;
+            } else {
+                // Calculate the middle point of the view window with pan offset
+                const panAdjustment = viewState.panOffset * (visibleRange / 100);
+                const midpoint = data[0].x + (timeRange / 2) + panAdjustment;
+                console.log("Midpoint:", midpoint, "Pan adjustment:", panAdjustment);
+
+                // Set min/max ensuring we don't go beyond data boundaries
+                min = Math.max(midpoint - visibleRange / 2, data[0].x);
+                max = Math.min(midpoint + visibleRange / 2, data[data.length-1].x);
+            }
+    
+            console.log("Setting x-axis limits to:", min, max);
+
+    
+            // Force Chart.js to respect the min/max values
+            ppgChart.options.scales.x.min = min;
+            ppgChart.options.scales.x.max = max;
+    
+            // Force update with animation disabled for this update
+            ppgChart.update('none'); // Use 'none' to skip animation
+        }
+
+    </script>
+</body>
+</html>
